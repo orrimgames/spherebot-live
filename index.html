@@ -24,7 +24,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hud"><b>SPHEREBOT</b> <span id="state">loading…</span><br><span id="tele"></span><br>drag&nbsp;=&nbsp;orbit&nbsp;·&nbsp;tap&nbsp;ground&nbsp;=&nbsp;drive&nbsp;there&nbsp;·&nbsp;C&nbsp;=&nbsp;camera</div>
+<div id="hud"><b>SPHEREBOT</b> <span id="state">loading…</span><br><span id="tele"></span><br>drag&nbsp;=&nbsp;orbit&nbsp;·&nbsp;tap&nbsp;=&nbsp;straight&nbsp;line&nbsp;there&nbsp;·&nbsp;C&nbsp;=&nbsp;camera</div>
 <button id="jump">JUMP</button>
 <button id="cam">CAM</button>
 <div id="batt"><span id="battxt">100%</span><div id="battbar"><div id="battfill"></div></div></div>
@@ -56,7 +56,7 @@ const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
 function quatToEuler(w,x,y,z){const sy=Math.max(-1,Math.min(1,2*(w*y-z*x)));
   return [Math.atan2(2*(w*z+x*y),1-2*(y*y+z*z)), Math.asin(sy), Math.atan2(2*(w*x+y*z),1-2*(x*x+y*y))];}
 // campus-proven depth fan + yield bands (campus_nav.py, 12/12 delivery sweeps)
-const RAY_ANGS = Array.from({length:13},(_,i)=>-1.31+i*(2.62/12));
+const RAY_ANGS = Array.from({length:24},(_,i)=>i*(2*Math.PI/24));   // omni ring (campus fan generalized)
 const RAY_MAX = 9.9;
 
 let mj, model, data, ADDR, bodies={}, pedMocap=[], int_v=0.0, target=null, jumping=false, jumpBase=0;
@@ -108,7 +108,7 @@ function ctrlState(){
           pos:[at(data.qpos,0),at(data.qpos,1),at(data.qpos,2)]};
 }
 
-function stepControl(v_star, psi_star, dtCtrl){
+function stepControl(v_star, psi_star, dtCtrl, dir=1){
   const s=ctrlState(), ev=v_star-s.v_meas, stopping=(v_star===0.0);
   let th_star;
   if(stopping){int_v=0; th_star=KP_V*ev;}
@@ -119,9 +119,9 @@ function stepControl(v_star, psi_star, dtCtrl){
   const lean=-s.pitch, leanRate=-s.pitchRate, kd=KD_TH*(stopping?2.0:1.0);
   let tau=-(KP_TH*(th_star-lean)-kd*leanRate);
   const cap=motorCurve(s.w_bearing); tau=Math.max(-cap,Math.min(cap,tau));
-  const epsi=wrap(psi_star-s.yaw);
+  const epsi=(dir>0)?wrap(psi_star-s.yaw):wrap(psi_star-s.yaw-Math.PI);   // reverse: travel axis = yaw+PI
   const phiScale=Math.min(1.0,Math.max(0.15,Math.abs(s.v_meas)/0.5));
-  const phiStar=Math.max(-PHI_MAX,Math.min(PHI_MAX,KP_PSI*epsi*phiScale));
+  const phiStar=Math.max(-PHI_MAX,Math.min(PHI_MAX,KP_PSI*epsi*phiScale*dir));   // mirrored steering when backing up
   let tau2=(KP_PHI*(phiStar-s.phi)-KD_PHI*s.w_steer)*S_STEER;
   const cap2=motorCurve(s.w_steer); tau2=Math.max(-cap2,Math.min(cap2,tau2));
   setAt(data.ctrl,ADDR.drive,tau*S_DRIVE); setAt(data.ctrl,ADDR.steer,tau2); setAt(data.ctrl,ADDR.spin,spinCmd);
@@ -134,30 +134,48 @@ function stepControl(v_star, psi_star, dtCtrl){
 const rayPnt=new Float64Array(3), rayVec=new Float64Array(3), rayGid=new Int32Array(1), rayGrp=new Uint8Array([0,1,0,0,0,0]);
 function lidarSweep(s){
   rayPnt[0]=s.pos[0]; rayPnt[1]=s.pos[1]; rayPnt[2]=0.20;
-  for(let i=0;i<13;i++){
+  for(let i=0;i<RAY_ANGS.length;i++){
     rayVec[0]=Math.cos(s.yaw+RAY_ANGS[i]); rayVec[1]=Math.sin(s.yaw+RAY_ANGS[i]); rayVec[2]=0;
     const d=mj.mj_ray(model,data,rayPnt,rayVec,rayGrp,1,bodies.shell,rayGid);
     lidar[i]=(d>=0&&d<RAY_MAX)?d:RAY_MAX;
   }
 }
 
+let driveDir=1, waitT=0;   // omni straight-line: fwd/rev chosen ONCE per target - never flip mid-route (yield stops keep direction)
 function navTick(s){
   let v_star=0, psi_star=s.yaw, mode='ready';
   if(target){
     const dx=target.x-s.pos[0], dy=target.y-s.pos[1], dist=Math.hypot(dx,dy);
-    if(dist<1.0){target=null; mode='arrived';}   // 1.0 m capture: same radius as the validated campus nav - the ball's min turn radius makes tighter homing orbit forever
-    else{v_star=Math.min(V_CRUISE,Math.max(0.4,0.45*dist)); psi_star=Math.atan2(dy,dx);
-         if(Math.abs(wrap(psi_star-s.yaw))>0.6 && Math.abs(s.v_meas)<0.4) v_star=Math.min(v_star,0.25);
-         mode='driving '+dist.toFixed(1)+' m';}
+    if(dist<1.0){target=null; mode='arrived';}   // 1.0 m capture: same radius as the validated campus nav
+    else{
+      psi_star=Math.atan2(dy,dx);
+      if(target.dir===undefined) target.dir=(Math.abs(wrap(psi_star-s.yaw))>1.9)?-1:1;  // truly behind (>109 deg) -> reverse the straight line
+      driveDir=target.dir;
+      v_star=driveDir*Math.min(driveDir>0?V_CRUISE:0.6,Math.max(0.4,0.45*dist));   // campus-proven v* law, signed; reverse capped for yaw margin
+      if(driveDir>0){const al=Math.cos(wrap(psi_star-s.yaw)); v_star*=Math.max(0.2,Math.min(1,al));}   // speed scales with heading alignment - no full-speed sideways dashes
+      mode=(driveDir>0?'driving ':'reversing ')+dist.toFixed(1)+' m';
+    }
   }
-  // campus yield logic, verbatim bands: stop inside 0.5, creep+bias inside 1.2, brake-match inside 4.5
-  const dmin=Math.min(...lidar), imin=lidar.indexOf(dmin);
-  if(dmin<0.5){v_star=0.0; mode='yielding';}
-  else if(dmin<1.2){v_star=(dmin<0.7)?0.0:Math.min(v_star,0.35);
-       psi_star+=((RAY_ANGS[imin]>0)?-0.5:0.5); if(mode==='ready')mode='yielding';}
-  else if(dmin<4.5){v_star=Math.min(v_star,Math.max(0.35,0.5*(dmin-0.6)));}
+  // campus yield bands, generalized to the travel-direction sector of the omni ring
+  const travelAz=(driveDir>0)?s.yaw:wrap(s.yaw+Math.PI);
+  let dmin=RAY_MAX, gmin=RAY_MAX, imin=-1;
+  for(let i=0;i<RAY_ANGS.length;i++){
+    gmin=Math.min(gmin,lidar[i]);
+    if(Math.abs(wrap(s.yaw+RAY_ANGS[i]-travelAz))<1.05 && lidar[i]<dmin){dmin=lidar[i]; imin=i;}
+  }
+  if(gmin<0.35||dmin<0.5){   // omni hard guard / campus stop band
+    waitT+=DT*CTRL_EVERY;
+    if(waitT>5.0){v_star=driveDir*0.5; psi_star=travelAz+0.9; mode='detour';}  // campus committed-detour escape
+    else{v_star=0.0; mode=(gmin<0.35)?'blocked':'yielding';}
+  }
+  else if(dmin<1.2){waitT+=DT*CTRL_EVERY;
+    v_star=Math.abs(v_star)>0?(driveDir*Math.min(Math.abs(v_star),0.35)):0.0;
+    if(imin>=0){const rel=wrap(s.yaw+RAY_ANGS[imin]-travelAz); psi_star=travelAz+((rel>0)?-0.5:0.5);}  // campus bias-away steering
+    if(waitT>5.0){v_star=driveDir*0.5; psi_star=travelAz+0.9; mode='detour';} else if(mode==='ready')mode='yielding';}
+  else{waitT=0.0;
+    if(dmin<4.5&&v_star!==0){v_star=driveDir*Math.min(Math.abs(v_star),Math.max(0.35,0.5*(dmin-0.6)));}}
   document.getElementById('state').textContent=mode;
-  return [v_star, psi_star];
+  return [v_star, psi_star, driveDir];
 }
 
 function jumpTick(){
@@ -236,7 +254,7 @@ marker.position.z=0.005; marker.visible=false; scene.add(marker);
 
 // lidar fan lines
 const lidarGeo=new THREE.BufferGeometry();
-lidarGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(13*2*3),3));
+lidarGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(RAY_ANGS.length*2*3),3));
 const lidarLines=new THREE.LineSegments(lidarGeo,new THREE.LineBasicMaterial({color:0x54e0ff,transparent:true,opacity:0.55}));
 lidarLines.frustumCulled=false; scene.add(lidarLines);
 
@@ -269,6 +287,7 @@ const eyeMat=new THREE.MeshBasicMaterial({color:0x86d4ff});
 const glowTex=(()=>{const cv=document.createElement('canvas');cv.width=cv.height=128;const g=cv.getContext('2d');
   const gr=g.createRadialGradient(64,64,4,64,64,64);gr.addColorStop(0,'rgba(140,210,255,0.95)');gr.addColorStop(0.35,'rgba(80,170,255,0.45)');gr.addColorStop(1,'rgba(40,120,255,0)');
   g.fillStyle=gr;g.fillRect(0,0,128,128);return new THREE.CanvasTexture(cv);})();
+const eyePair=new THREE.Group(); chassisG.add(eyePair);
 for(const sy of [1,-1]){const eg=new THREE.Group();
   for(let r=0;r<7;r++)for(let c=0;c<5;c++){
     const dot=new THREE.Mesh(new THREE.SphereGeometry(0.005,10,8),eyeMat);
@@ -276,7 +295,8 @@ for(const sy of [1,-1]){const eg=new THREE.Group();
     eg.add(dot);}
   const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:0x5fb8ff,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
   glow.scale.set(0.16,0.16,1); glow.position.x=0.006; eg.add(glow);
-  eg.position.set(0.172,sy*0.048,0.06); chassisG.add(eg);}
+  eg.position.set(0,sy*0.048,0); eyePair.add(eg);}
+eyePair.position.set(0.172,0,0.06);
 const eyeGroups=chassisG.children.filter(o=>o.type==='Group');
 const eyeLight=new THREE.PointLight(0x66c0ff,0.55,0.9); eyeLight.position.set(0.19,0,0.06); chassisG.add(eyeLight);
 // flywheel (spins about z)
@@ -300,7 +320,7 @@ function syncMeshes(){
   for(let i=0;i<4;i++){const [px,py]=pedPos(i,data.time); pedMeshes[i].position.set(px,py,0);}
   // lidar fan render
   const p=lidarGeo.attributes.position.array, s=ctrlState();
-  for(let i=0;i<13;i++){
+  for(let i=0;i<RAY_ANGS.length;i++){
     const a=s.yaw+RAY_ANGS[i], d=lidar[i];
     p[i*6]=s.pos[0]; p[i*6+1]=s.pos[1]; p[i*6+2]=0.20;
     p[i*6+3]=s.pos[0]+d*Math.cos(a); p[i*6+4]=s.pos[1]+d*Math.sin(a); p[i*6+5]=0.20;
@@ -308,6 +328,13 @@ function syncMeshes(){
   lidarGeo.attributes.position.needsUpdate=true;
   const near=Math.min(...lidar);
   lidarLines.material.color.setHSL(near<1.2?0.0:0.52,0.9,near<1.2?0.6:0.55);
+  // eyes migrate: face the direction of travel (LED matrices are software - render anywhere on the shell)
+  const spd=Math.hypot(at(data.qvel,0),at(data.qvel,1));
+  if(spd>0.15){const az=Math.atan2(at(data.qvel,1),at(data.qvel,0));
+    const rel=wrap(az-s.yaw), cur=eyePair.userData.az||0;
+    eyePair.userData.az=cur+wrap(rel-cur)*0.12;
+    eyePair.position.set(0.172*Math.cos(eyePair.userData.az),0.172*Math.sin(eyePair.userData.az),0.06);
+    eyePair.rotation.z=eyePair.userData.az;}
   // bot camera pose: chassis mast looking along chassis +x
   const cb=bodies.chassis, qw=at(data.xquat,4*cb),qx=at(data.xquat,4*cb+1),qy=at(data.xquat,4*cb+2),qz=at(data.xquat,4*cb+3);
   const xw=[1-2*(qy*qy+qz*qz),2*(qx*qy+qz*qw),2*(qx*qz-qy*qw)];
@@ -351,7 +378,7 @@ function frame(now){
     acc+=Math.min((now-last)/1000,0.05);
     let n=0;
     while(acc>=DT&&n<40){
-      if(k%CTRL_EVERY===0){const s0=ctrlState();lidarSweep(s0);const [v,psi]=navTick(s0);stepControl(v,psi,DT*CTRL_EVERY);}
+      if(k%CTRL_EVERY===0){const s0=ctrlState();lidarSweep(s0);const [v,psi,dd]=navTick(s0);stepControl(v,psi,DT*CTRL_EVERY,dd);}
       jumpTick(); mj.mj_step(model,data); k++; acc-=DT; n++;}
     if(acc>=DT)acc=0;   // shed backlog instead of spiral
     syncMeshes();
