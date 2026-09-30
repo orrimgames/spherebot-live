@@ -1,0 +1,59 @@
+<mujoco model="spherebot_v1">
+  <compiler angle="radian"/>
+  <option timestep="0.001" gravity="0 0 -9.81" cone="pyramidal"/>
+  <default>
+    <geom friction="0.4 0.001 0.0005"/>
+  </default>
+  <worldbody>
+    <light pos="2 -3 4" dir="-0.4 0.6 -1" diffuse="0.9 0.9 0.9"/>
+    <light pos="-2 3 4" dir="0.4 -0.6 -1" diffuse="0.5 0.5 0.5"/>
+    <geom name="floor" type="plane" size="30 30 0.1" condim="6" rgba="0.75 0.65 0.5 1"/>
+    <body name="shell" pos="0 0 0.203">
+      <freejoint name="shell_free"/>
+      <inertial mass="1.5535426999413815" pos="0 0 0" diaginertia="0.04267996074792293 0.04267996074792293 0.04267996074792293"/>
+      <geom name="shellg" type="sphere" size="0.203" condim="6" rgba="0.55 0.75 0.95 0.30"/>
+      <geom type="sphere" size="0.015" pos="0.2030 0.0000 0" rgba="0.9 0.1 0.1 1" contype="0" conaffinity="0"/>
+<geom type="sphere" size="0.015" pos="0.1435 0.1435 0" rgba="0.9 0.1 0.1 1" contype="0" conaffinity="0"/>
+<geom type="sphere" size="0.015" pos="0.0000 0.2030 0" rgba="0.9 0.1 0.1 1" contype="0" conaffinity="0"/>
+<geom type="sphere" size="0.015" pos="-0.1435 0.1435 0" rgba="0.9 0.1 0.1 1" contype="0" conaffinity="0"/>
+<geom type="sphere" size="0.015" pos="-0.2030 0.0000 0" rgba="0.9 0.1 0.1 1" contype="0" conaffinity="0"/>
+<geom type="sphere" size="0.015" pos="-0.1435 -0.1435 0" rgba="0.9 0.1 0.1 1" contype="0" conaffinity="0"/>
+<geom type="sphere" size="0.015" pos="-0.0000 -0.2030 0" rgba="0.9 0.1 0.1 1" contype="0" conaffinity="0"/>
+<geom type="sphere" size="0.015" pos="0.1435 -0.1435 0" rgba="0.9 0.1 0.1 1" contype="0" conaffinity="0"/>
+
+      <site name="shell_ctr" pos="0 0 0" size="0.005"/>
+      <!-- chassis: hangs from diameter axle (bearing hinge y), elastomer-isolated (slide z) -->
+      <body name="chassis" pos="0 0 0">
+        <inertial mass="0.985" pos="0 0 -0.02" diaginertia="0.006 0.006 0.003"/>
+        <joint name="iso_z" type="slide" axis="0 0 1" stiffness="50000.0" damping="185.0"
+               range="-0.012 0.012" limited="true"/>
+        <joint name="bearing_y" type="hinge" axis="0 1 0" frictionloss="0.002"/>
+        <geom type="box" size="0.05 0.05 0.02" pos="0 0 -0.02" rgba="0.3 0.3 0.3 1" contype="0" conaffinity="0"/>
+        <geom type="capsule" size="0.008" fromto="0 0 0 0 0 0.12" rgba="0.4 0.4 0.45 1" contype="0" conaffinity="0"/>
+        <geom name="camera" type="box" size="0.015 0.015 0.01" pos="0 0 0.125" rgba="0.1 0.9 0.2 1" contype="0" conaffinity="0"/>
+        <camera name="campov" pos="0 0 0.125" xyaxes="1 0 0 0 0 1" fovy="62"/>
+        <light name="headlight" pos="0 0 0.12" dir="1 0 -0.15" directional="false" diffuse="0.8 0.8 0.75" specular="0.2 0.2 0.2"/>
+        <site name="cam_site" pos="0 0 0.125" size="0.005"/>
+        <!-- pendulum: battery + ballast, lateral-lean hinge x for steering -->
+        <body name="pendulum" pos="0 0 0">
+          <inertial mass="0.8" pos="0 0 -0.12" diaginertia="0.0115 0.0115 0.0015"/>
+          <joint name="steer_x" type="hinge" axis="1 0 0" frictionloss="0.002"/>
+          <geom type="cylinder" size="0.06 0.004" pos="0 0 -0.15" rgba="0.5 0.5 0.55 1" contype="0" conaffinity="0"/>
+          <geom type="box" size="0.055 0.03 0.028" pos="0 0 -0.09" rgba="0.8 0.6 0.1 1" contype="0" conaffinity="0"/>
+          <geom type="capsule" size="0.006" fromto="0 0 0 0 0 -0.12" rgba="0.4 0.4 0.45 1" contype="0" conaffinity="0"/>
+        </body>
+        <!-- yaw flywheel for spin/twirl -->
+        <body name="flywheel" pos="0 0 0.05">
+          <inertial mass="0.4" pos="0 0 0" diaginertia="0.0002025 0.0002025 0.000405"/>
+          <joint name="fly_z" type="hinge" axis="0 0 1" frictionloss="0.0005" damping="0.0001"/>
+          <geom type="cylinder" size="0.045 0.004" rgba="0.7 0.2 0.8 1" contype="0" conaffinity="0"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="drive" joint="bearing_y" ctrllimited="true" ctrlrange="-2.6477955 2.6477955"/>
+    <motor name="steer" joint="steer_x" ctrllimited="true" ctrlrange="-2.6477955 2.6477955"/>
+    <motor name="spin" joint="fly_z" ctrllimited="true" ctrlrange="-0.08 0.08"/>
+  </actuator>
+</mujoco>

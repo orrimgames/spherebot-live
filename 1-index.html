@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>SphereBot - live physics playground</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0e14;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  #c{position:fixed;inset:0;touch-action:none}
+  #hud{position:fixed;left:12px;top:10px;color:#9fd0ff;font-size:13px;line-height:1.5;pointer-events:none;text-shadow:0 1px 3px #000}
+  #hud b{color:#fff;font-size:15px}
+  #jump{position:fixed;right:16px;bottom:18px;width:96px;height:96px;border-radius:50%;border:2px solid #4db2ff;
+        background:rgba(20,40,70,.75);color:#bfe3ff;font:bold 17px ui-monospace,monospace;cursor:pointer}
+  #jump:active{background:rgba(60,130,220,.8)}
+  #note{position:fixed;left:12px;bottom:10px;color:#5c7186;font-size:11px;max-width:640px;line-height:1.45;pointer-events:none}
+  #load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#9fd0ff;font-size:15px;background:#0b0e14}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><b>SPHEREBOT</b> <span id="state">loading…</span><br><span id="tele"></span><br>drag&nbsp;=&nbsp;orbit&nbsp;·&nbsp;click&nbsp;ground&nbsp;=&nbsp;drive&nbsp;there</div>
+<button id="jump">JUMP</button>
+<div id="note">Real MuJoCo physics in your browser: rolling contact, pendulum drive dynamics, motor torque curve, jump spring.
+The exact validated simulation model &amp; controller from the build package. Emulated / not modeled here: camera perception, GPS, campus terrain, pedestrians.</div>
+<div id="load">loading physics engine (11 MB wasm)…</div>
+<script type="importmap">{"imports":{"three":"./three.module.js","three/addons/controls/OrbitControls.js":"./OrbitControls.js"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import loadMujoco from './mujoco_wasm.js';
+
+// ---------- controller constants: ported verbatim from sim.py / params.py ----------
+const DT = 0.001, CTRL_EVERY = 2;
+const R_SHELL = 0.203;
+const KP_V=0.9, KI_V=0.2, KP_TH=4.0, KD_TH=1.0, KP_PSI=0.30, KP_PHI=3.5, KD_PHI=0.8;
+const TH_MAX=25*Math.PI/180, PHI_MAX=22*Math.PI/180;
+const TAU_STALL=27*0.0980665, W_NL=150/60*2*Math.PI, TAU_M3_MAX=0.08;
+const S_ODOM=-1.0, S_DRIVE=1.0, S_STEER=1.0;
+const V_CRUISE=1.2;
+// jump module (validated 11 J bungee spring, render_jump.py)
+const K_JUMP=10000.0, X0_JUMP=Math.sqrt(2*11.0/K_JUMP);
+const motorCurve = w => Math.max(0, TAU_STALL*(1-Math.abs(w)/W_NL));
+const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+function quatToEuler(w,x,y,z){const sy=Math.max(-1,Math.min(1,2*(w*y-z*x)));
+  return [Math.atan2(2*(w*z+x*y),1-2*(y*y+z*z)), Math.asin(sy), Math.atan2(2*(w*x+y*z),1-2*(x*x+y*y))];}
+
+let mj, model, data, ADDR, bodies={}, int_v=0.0, target=null, jumping=false, jumpBase=0;
+let spinCmd=0.0;
+const at=(v,i)=>v[i]; const setAt=(v,i,x)=>{v[i]=x;};
+const OBJ=n=>{const o=mj.mjtObj&&mj.mjtObj[n];return typeof o==='object'&&o!==null?o.value:o;};
+
+async function boot(){
+  mj = await loadMujoco();
+  mj.FS.mkdir('/w'); mj.FS.mount(mj.MEMFS,{root:'.'},'/w');
+  const xml = await (await fetch('./spherebot.xml')).text();
+  mj.FS.writeFile('/w/bot.xml', xml);
+  model = mj.MjModel.loadFromXML('/w/bot.xml');
+  data = new mj.MjData(model);
+  const jid=n=>mj.mj_name2id(model,OBJ('mjOBJ_JOINT'),n), aid=n=>mj.mj_name2id(model,OBJ('mjOBJ_ACTUATOR'),n),
+        bid=n=>mj.mj_name2id(model,OBJ('mjOBJ_BODY'),n);
+  const jpos=n=>at(model.jnt_qposadr,jid(n)), jdof=n=>at(model.jnt_dofadr,jid(n));
+  ADDR={drive:aid('drive'),steer:aid('steer'),spin:aid('spin'),
+        iso:jpos('iso_z'),brg:jpos('bearing_y'),stx:jpos('steer_x'),fly:jpos('fly_z'),
+        dBrg:jdof('bearing_y'),dStx:jdof('steer_x')};
+  for(const n of ['shell','chassis','pendulum','flywheel']) bodies[n]=bid(n);
+  const bad=Object.entries({...ADDR,...bodies}).filter(([,v])=>v<0).map(([k])=>k);
+  if(bad.length) throw new Error('name lookup failed: '+bad.join(','));
+  document.getElementById('load').remove();
+  document.getElementById('state').textContent='ready';
+}
+
+function ctrlState(){
+  const q=data.xquat, cb=bodies.chassis, w=at(q,4*cb),x=at(q,4*cb+1),y=at(q,4*cb+2),z=at(q,4*cb+3);
+  const [yaw,pitch,roll]=quatToEuler(w,x,y,z);
+  const xw=[1-2*(y*y+z*z),2*(x*y+z*w),2*(x*z-y*w)];
+  const v_meas=S_ODOM*R_SHELL*at(data.qvel,ADDR.dBrg);
+  const v_true=at(data.qvel,0)*xw[0]+at(data.qvel,1)*xw[1]+at(data.qvel,2)*xw[2];
+  const yw=[2*(x*y-z*w),1-2*(x*x+z*z),2*(y*z+x*w)];
+  const cv=data.cvel, pitchRate=at(cv,6*cb)*yw[0]+at(cv,6*cb+1)*yw[1]+at(cv,6*cb+2)*yw[2];
+  return {yaw,pitch,roll,v_meas,v_true,pitchRate,
+          phi:at(data.qpos,ADDR.stx), w_bearing:at(data.qvel,ADDR.dBrg), w_steer:at(data.qvel,ADDR.dStx),
+          pos:[at(data.qpos,0),at(data.qpos,1),at(data.qpos,2)]};
+}
+
+function stepControl(v_star, psi_star, dtCtrl){
+  const s=ctrlState(), ev=v_star-s.v_meas, stopping=(v_star===0.0);
+  let th_star;
+  if(stopping){int_v=0; th_star=KP_V*ev;}
+  else{const th_pre=KP_V*ev+KI_V*int_v;
+       if(Math.abs(th_pre)<TH_MAX*0.99) int_v=Math.max(-1.5,Math.min(1.5,int_v+ev*dtCtrl));
+       th_star=KP_V*ev+KI_V*int_v;}
+  th_star=Math.max(-TH_MAX,Math.min(TH_MAX,th_star));
+  const lean=-s.pitch, leanRate=-s.pitchRate, kd=KD_TH*(stopping?2.0:1.0);
+  let tau=-(KP_TH*(th_star-lean)-kd*leanRate);
+  const cap=motorCurve(s.w_bearing); tau=Math.max(-cap,Math.min(cap,tau));
+  const epsi=wrap(psi_star-s.yaw);
+  const phiScale=Math.min(1.0,Math.max(0.15,Math.abs(s.v_meas)/0.5));
+  const phiStar=Math.max(-PHI_MAX,Math.min(PHI_MAX,KP_PSI*epsi*phiScale));
+  let tau2=(KP_PHI*(phiStar-s.phi)-KD_PHI*s.w_steer)*S_STEER;
+  const cap2=motorCurve(s.w_steer); tau2=Math.max(-cap2,Math.min(cap2,tau2));
+  setAt(data.ctrl,ADDR.drive,tau*S_DRIVE); setAt(data.ctrl,ADDR.steer,tau2); setAt(data.ctrl,ADDR.spin,spinCmd);
+  return s;
+}
+
+function navTick(s){
+  let v_star=0, psi_star=s.yaw;
+  if(target){
+    const dx=target.x-s.pos[0], dy=target.y-s.pos[1], dist=Math.hypot(dx,dy);
+    if(dist<1.0){target=null; document.getElementById('state').textContent='arrived';}   // 1.0 m capture: same radius as the validated campus nav - the ball's min turn radius makes tighter homing orbit forever
+    else{v_star=Math.min(V_CRUISE,Math.max(0.4,0.45*dist)); psi_star=Math.atan2(dy,dx);
+         if(Math.abs(wrap(psi_star-s.yaw))>0.6 && Math.abs(s.v_meas)<0.4) v_star=Math.min(v_star,0.25);
+         document.getElementById('state').textContent='driving '+dist.toFixed(1)+' m';}
+  }
+  return [v_star, psi_star];
+}
+
+function jumpTick(){
+  const sb=bodies.shell;
+  if(!jumping){setAt(data.xfrc_applied,6*sb+2,0); return;}
+  const rise=at(data.qpos,2)-jumpBase;
+  setAt(data.xfrc_applied,6*sb+2,(rise<X0_JUMP)?K_JUMP*(X0_JUMP-rise):0);
+  if(rise>=X0_JUMP||at(data.qpos,2)>R_SHELL+0.05){jumping=false;}
+}
+
+// ---------- three.js scene ----------
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b0e14); scene.fog=new THREE.Fog(0x0b0e14,14,38);
+const cam=new THREE.PerspectiveCamera(50,1,0.01,100); cam.up.set(0,0,1); cam.position.set(1.6,-1.6,1.1);
+const orbit=new OrbitControls(cam,canvas); orbit.enableDamping=true; orbit.maxPolarAngle=Math.PI*0.49;
+scene.add(new THREE.HemisphereLight(0x8fb8ff,0x1a2433,0.9));
+const sun=new THREE.DirectionalLight(0xfff2e0,1.6); sun.position.set(3,-2,5); sun.castShadow=true;
+sun.shadow.mapSize.set(1024,1024); scene.add(sun);
+renderer.shadowMap.enabled=true;
+
+// ground
+const ground=new THREE.Mesh(new THREE.CircleGeometry(30,64),
+  new THREE.MeshStandardMaterial({color:0x182030,roughness:0.95}));
+ground.receiveShadow=true; scene.add(ground);
+const grid=new THREE.GridHelper(60,60,0x2a3a55,0x1b2740); grid.rotation.x=Math.PI/2; grid.position.z=0.001; scene.add(grid);
+
+// destination marker
+const marker=new THREE.Mesh(new THREE.RingGeometry(0.16,0.22,40),
+  new THREE.MeshBasicMaterial({color:0x4db2ff,side:THREE.DoubleSide,transparent:true,opacity:0.9}));
+marker.position.z=0.005; marker.visible=false; scene.add(marker);
+
+// ---- the bot: BOM-accurate shapes, posed from mjData every frame ----
+const shellMat=new THREE.MeshPhysicalMaterial({color:0xcfe6ff,transmission:0.92,thickness:0.003,
+  roughness:0.28,ior:1.5,transparent:true,opacity:1,side:THREE.DoubleSide});
+const shellG=new THREE.Group();
+const shellMesh=new THREE.Mesh(new THREE.SphereGeometry(R_SHELL,48,32),shellMat); shellMesh.castShadow=true; shellG.add(shellMesh);
+// hatch rim + camera window (real-build details)
+const win=new THREE.Mesh(new THREE.CircleGeometry(0.035,24),new THREE.MeshStandardMaterial({color:0x0a0f18,roughness:0.1}));
+win.position.set(R_SHELL-0.001,0,0.06); win.rotation.y=Math.PI/2; shellG.add(win);
+scene.add(shellG);
+
+const chassisG=new THREE.Group(); scene.add(chassisG);
+function box(w,h,d,c,r=0.4){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:c,roughness:r,metalness:0.15}));m.castShadow=true;chassisG.add(m);return m;}
+box(0.10,0.10,0.04,0x3a4149);                                     // frame plate
+const mot1=new THREE.Mesh(new THREE.CylinderGeometry(0.0185,0.0185,0.075,20),new THREE.MeshStandardMaterial({color:0x8a8f99,metalness:0.6,roughness:0.35}));
+mot1.rotation.x=Math.PI/2; mot1.position.set(0,0.045,-0.02); chassisG.add(mot1);   // drive motor on axle axis
+const mot2=mot1.clone(); mot2.rotation.set(0,0,Math.PI/2); mot2.position.set(0.045,0,-0.02); chassisG.add(mot2); // steer motor
+const batt=box(0.11,0.06,0.056,0xc79a2e,0.6); batt.position.set(0,0,-0.09);        // 3S2P pack
+const ballast=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,0.006,28),new THREE.MeshStandardMaterial({color:0x555a63,metalness:0.7,roughness:0.3}));
+ballast.rotation.x=Math.PI/2; ballast.position.set(0,0,-0.125); ballast.castShadow=true; chassisG.add(ballast);
+const mast=new THREE.Mesh(new THREE.CylinderGeometry(0.008,0.008,0.12,12),new THREE.MeshStandardMaterial({color:0x666c78,metalness:0.5,roughness:0.4}));
+mast.position.set(0,0,0.06); chassisG.add(mast);
+box(0.03,0.03,0.02,0x14181f).position.set(0,0,0.125);              // camera module
+const lens=new THREE.Mesh(new THREE.CircleGeometry(0.008,16),new THREE.MeshBasicMaterial({color:0x66ff88}));
+lens.position.set(0.015,0,0.125); lens.rotation.y=Math.PI/2; chassisG.add(lens);
+// LED matrix eyes (5x7 each, emissive blue) on the +x face
+const eyeMat=new THREE.MeshBasicMaterial({color:0x4db2ff});
+for(const sy of [1,-1]){const eg=new THREE.Group();
+  for(let r=0;r<7;r++)for(let c=0;c<5;c++){
+    const dot=new THREE.Mesh(new THREE.SphereGeometry(0.0022,8,6),eyeMat);
+    const edge=(r===0||r===6||c===0||c===4);
+    dot.position.set(0,(c-2)*0.006+sy*0.028,(r-3)*0.006+0.06);
+    if(!edge) eg.add(dot);}
+  eg.position.set(0.052,0,0); chassisG.add(eg);}
+// flywheel (spins about z)
+const flyG=new THREE.Group(); scene.add(flyG);
+const fly=new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.045,0.008,32),new THREE.MeshStandardMaterial({color:0x9a4dbb,metalness:0.6,roughness:0.3}));
+fly.rotation.x=Math.PI/2; fly.castShadow=true; flyG.add(fly);
+
+function syncMeshes(){
+  const q=data.qpos;
+  shellG.position.set(at(q,0),at(q,1),at(q,2));
+  shellG.quaternion.set(at(q,4),at(q,5),at(q,6),at(q,3));   // wxyz -> xyzw
+  for(const [g,name] of [[chassisG,'chassis'],[flyG,'flywheel']]){
+    const b=bodies[name];
+    g.position.set(at(data.xpos,3*b),at(data.xpos,3*b+1),at(data.xpos,3*b+2));
+    g.quaternion.set(at(data.xquat,4*b+1),at(data.xquat,4*b+2),at(data.xquat,4*b+3),at(data.xquat,4*b));}
+  fly.rotation.set(Math.PI/2,at(data.qpos,ADDR.fly),0);
+  if(target){marker.position.set(target.x,target.y,0.005);marker.visible=true;}else marker.visible=false;
+}
+
+// ---------- input ----------
+const ray=new THREE.Raycaster(), plane=new THREE.Plane(new THREE.Vector3(0,0,1),0), ndc=new THREE.Vector2();
+let downAt=0;
+canvas.addEventListener('pointerdown',()=>downAt=performance.now());
+canvas.addEventListener('pointerup',e=>{
+  if(performance.now()-downAt>220)return;                 // drag, not tap
+  ndc.set((e.clientX/innerWidth)*2-1,-(e.clientY/innerHeight)*2+1);
+  ray.setFromCamera(ndc,cam);
+  const p=new THREE.Vector3();
+  if(ray.ray.intersectPlane(plane,p)&&Math.hypot(p.x,p.y)<28) target={x:p.x,y:p.y};
+});
+document.getElementById('jump').addEventListener('click',()=>{
+  if(jumping)return; jumpBase=at(data.qpos,2); jumping=true;
+  document.getElementById('state').textContent='jump!';
+});
+addEventListener('keydown',e=>{if(e.key==='j'||e.key==='J')document.getElementById('jump').click();
+  if(e.key===' '){spinCmd=spinCmd?0:TAU_M3_MAX;}});
+
+// ---------- main loop ----------
+let last=performance.now(), acc=0, k=0;
+function frame(now){
+  requestAnimationFrame(frame);
+  if(model){
+    acc+=Math.min((now-last)/1000,0.05);
+    let n=0;
+    while(acc>=DT&&n<40){
+      if(k%CTRL_EVERY===0){const s0=ctrlState();const [v,psi]=navTick(s0);stepControl(v,psi,DT*CTRL_EVERY);}
+      jumpTick(); mj.mj_step(model,data); k++; acc-=DT; n++;}
+    if(acc>=DT)acc=0;   // shed backlog instead of spiral
+    syncMeshes();
+    const s=ctrlState();
+    document.getElementById('tele').textContent=`v ${s.v_true.toFixed(2)} m/s · lean ${(-s.pitch*57.3).toFixed(0)}° · t ${data.time.toFixed(1)} s`;
+    // camera follows the bot softly
+    const bp=shellG.position;
+    orbit.target.lerp(new THREE.Vector3(bp.x,bp.y,bp.z),0.08);
+  }
+  last=now;
+  orbit.update(); renderer.render(scene,cam);
+}
+function resize(){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();}
+addEventListener('resize',resize); resize();
+boot().catch(e=>{document.getElementById('load').textContent='failed to load physics: '+e.message;console.error(e);});
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
