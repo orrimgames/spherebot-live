@@ -223,7 +223,7 @@ const pedMeshes=[];
 for(let i=0;i<4;i++){
   const g=new THREE.Group(), shirt=[0x3350b0,0xb04030,0x2f8f4d,0xc0a030][i];
   const torso=new THREE.Mesh(new THREE.CapsuleGeometry(0.17,1.0,6,12),new THREE.MeshStandardMaterial({color:shirt,roughness:0.8}));
-  torso.position.z=0.85; torso.castShadow=true; g.add(torso);
+  torso.rotation.x=Math.PI/2; torso.position.z=0.85; torso.castShadow=true; g.add(torso);
   const head=new THREE.Mesh(new THREE.SphereGeometry(0.12,16,12),new THREE.MeshStandardMaterial({color:0xd8b596,roughness:0.7}));
   head.position.z=1.62; head.castShadow=true; g.add(head);
   scene.add(g); pedMeshes.push(g);
@@ -277,6 +277,7 @@ for(const sy of [1,-1]){const eg=new THREE.Group();
   const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:0x5fb8ff,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
   glow.scale.set(0.16,0.16,1); glow.position.x=0.006; eg.add(glow);
   eg.position.set(0.172,sy*0.048,0.06); chassisG.add(eg);}
+const eyeGlows=chassisG.children.filter(o=>o.type==='Group').flatMap(g=>g.children.filter(c=>c.isSprite));
 const eyeLight=new THREE.PointLight(0x66c0ff,0.55,0.9); eyeLight.position.set(0.19,0,0.06); chassisG.add(eyeLight);
 // flywheel (spins about z)
 const flyG=new THREE.Group(); scene.add(flyG);
@@ -370,8 +371,11 @@ function frame(now){
   renderer.render(scene,cam);
   if(model&&camOn){
     const w=Math.min(380,innerWidth*0.42), h=w*9/16;
+    // the real camera looks out through its hatch window: hide the shell + eye glow for the bot's-eye view
+    shellMesh.visible=false; for(const g of eyeGlows)g.visible=false;
     renderer.setViewport(12,60,w,h); renderer.setScissor(12,60,w,h); renderer.setScissorTest(true);
     renderer.render(scene,camBot); renderer.setScissorTest(false);
+    shellMesh.visible=true; for(const g of eyeGlows)g.visible=true;
   }
 }
 function resize(){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();}
