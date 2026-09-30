@@ -12,16 +12,25 @@
   #jump{position:fixed;right:16px;bottom:18px;width:96px;height:96px;border-radius:50%;border:2px solid #4db2ff;
         background:rgba(20,40,70,.75);color:#bfe3ff;font:bold 17px ui-monospace,monospace;cursor:pointer}
   #jump:active{background:rgba(60,130,220,.8)}
-  #note{position:fixed;left:12px;bottom:10px;color:#5c7186;font-size:11px;max-width:640px;line-height:1.45;pointer-events:none}
+  #cam{position:fixed;right:16px;bottom:126px;width:96px;height:40px;border-radius:10px;border:2px solid #4db2ff;
+        background:rgba(20,40,70,.75);color:#bfe3ff;font:bold 13px ui-monospace,monospace;cursor:pointer}
+  #cam:active{background:rgba(60,130,220,.8)}
+  #batt{position:fixed;right:16px;top:12px;width:120px;color:#9fd0ff;font-size:11px;text-align:right;text-shadow:0 1px 3px #000}
+  #battbar{height:8px;border:1px solid #4db2ff;border-radius:4px;margin-top:3px;background:rgba(10,20,35,.6)}
+  #battfill{height:100%;width:100%;border-radius:3px;background:linear-gradient(90deg,#37e08b,#7fd0ff)}
+  #note{position:fixed;left:12px;bottom:10px;color:#5c7186;font-size:11px;max-width:660px;line-height:1.45;pointer-events:none}
   #load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#9fd0ff;font-size:15px;background:#0b0e14}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hud"><b>SPHEREBOT</b> <span id="state">loading…</span><br><span id="tele"></span><br>drag&nbsp;=&nbsp;orbit&nbsp;·&nbsp;click&nbsp;ground&nbsp;=&nbsp;drive&nbsp;there</div>
+<div id="hud"><b>SPHEREBOT</b> <span id="state">loading…</span><br><span id="tele"></span><br>drag&nbsp;=&nbsp;orbit&nbsp;·&nbsp;tap&nbsp;ground&nbsp;=&nbsp;drive&nbsp;there&nbsp;·&nbsp;C&nbsp;=&nbsp;camera</div>
 <button id="jump">JUMP</button>
-<div id="note">Real MuJoCo physics in your browser: rolling contact, pendulum drive dynamics, motor torque curve, jump spring.
-The exact validated simulation model &amp; controller from the build package. Emulated / not modeled here: camera perception, GPS, campus terrain, pedestrians.</div>
+<button id="cam">CAM</button>
+<div id="batt"><span id="battxt">100%</span><div id="battbar"><div id="battfill"></div></div></div>
+<div id="note">Real MuJoCo physics in your browser: rolling contact, pendulum drive dynamics, motor torque curve, jump spring, per-surface contact friction.
+The exact validated simulation model &amp; controller from the build package. Terrain-park behavior (hill, ramp, steps, curb, grass/gravel/slick pads) is unvalidated physics - failures are real data.
+Emulated / idealized: 13-ray depth fan is noise-free, the camera view is a render (not the bot's vision pipeline), pedestrians are scripted movers, GPS is not modeled. Battery: datasheet power model, 72 Wh pack at 80% usable.</div>
 <div id="load">loading physics engine (11 MB wasm)…</div>
 <script type="importmap">{"imports":{"three":"./three.module.js","three/addons/controls/OrbitControls.js":"./OrbitControls.js"}}</script>
 <script type="module">
@@ -39,20 +48,35 @@ const S_ODOM=-1.0, S_DRIVE=1.0, S_STEER=1.0;
 const V_CRUISE=1.2;
 // jump module (validated 11 J bungee spring, render_jump.py)
 const K_JUMP=10000.0, X0_JUMP=Math.sqrt(2*11.0/K_JUMP);
+// battery model (params.py): I = I_NL + (I_STALL-I_NL)*|tau|/TAU_STALL at V_BUS, + electronics idle
+const V_BUS=12.0, I_NL=0.2, I_STALL=5.5, P_IDLE=3.0, WH_USABLE=72*0.8;
 const motorCurve = w => Math.max(0, TAU_STALL*(1-Math.abs(w)/W_NL));
+const motorCurrent = t => I_NL + (I_STALL-I_NL)*Math.abs(t)/TAU_STALL;
 const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
 function quatToEuler(w,x,y,z){const sy=Math.max(-1,Math.min(1,2*(w*y-z*x)));
   return [Math.atan2(2*(w*z+x*y),1-2*(y*y+z*z)), Math.asin(sy), Math.atan2(2*(w*x+y*z),1-2*(x*x+y*y))];}
+// campus-proven depth fan + yield bands (campus_nav.py, 12/12 delivery sweeps)
+const RAY_ANGS = Array.from({length:13},(_,i)=>-1.31+i*(2.62/12));
+const RAY_MAX = 9.9;
 
-let mj, model, data, ADDR, bodies={}, int_v=0.0, target=null, jumping=false, jumpBase=0;
-let spinCmd=0.0;
+let mj, model, data, ADDR, bodies={}, pedMocap=[], int_v=0.0, target=null, jumping=false, jumpBase=0;
+let spinCmd=0.0, wattNow=0.0, whUsed=0.0, lidar=RAY_ANGS.map(()=>RAY_MAX), camOn=false;
 const at=(v,i)=>v[i]; const setAt=(v,i,x)=>{v[i]=x;};
 const OBJ=n=>{const o=mj.mjtObj&&mj.mjtObj[n];return typeof o==='object'&&o!==null?o.value:o;};
+
+// scripted pedestrians (same triangle-wave movers as campus_nav.py ped_paths)
+const PED_PATHS=[[[-9,0],[-2,-7]],[[2,9],[8,9]],[[9,-6],[12,2]],[[-1,-9],[8,-9]]];
+const PED_PHASE=[0.13,0.55,0.81,0.37], PED_SPEED=1.2;
+function pedPos(i,t){
+  const [a,b]=PED_PATHS[i], period=2*Math.hypot(b[0]-a[0],b[1]-a[1])/PED_SPEED;
+  const ph=((PED_PHASE[i]+t/period)%1+1)%1, s=2*(ph<0.5?ph:1-ph);
+  return [a[0]+s*(b[0]-a[0]), a[1]+s*(b[1]-a[1])];
+}
 
 async function boot(){
   mj = await loadMujoco();
   mj.FS.mkdir('/w'); mj.FS.mount(mj.MEMFS,{root:'.'},'/w');
-  const xml = await (await fetch('./spherebot.xml')).text();
+  const xml = await (await fetch('./spherebot.xml?v=2')).text();
   mj.FS.writeFile('/w/bot.xml', xml);
   model = mj.MjModel.loadFromXML('/w/bot.xml');
   data = new mj.MjData(model);
@@ -63,8 +87,10 @@ async function boot(){
         iso:jpos('iso_z'),brg:jpos('bearing_y'),stx:jpos('steer_x'),fly:jpos('fly_z'),
         dBrg:jdof('bearing_y'),dStx:jdof('steer_x')};
   for(const n of ['shell','chassis','pendulum','flywheel']) bodies[n]=bid(n);
+  for(let i=0;i<4;i++){const b=bid('ped_'+i); pedMocap.push(at(model.body_mocapid,b));}
   const bad=Object.entries({...ADDR,...bodies}).filter(([,v])=>v<0).map(([k])=>k);
   if(bad.length) throw new Error('name lookup failed: '+bad.join(','));
+  if(pedMocap.some(v=>v<0)) throw new Error('ped mocap lookup failed');
   document.getElementById('load').remove();
   document.getElementById('state').textContent='ready';
 }
@@ -99,18 +125,38 @@ function stepControl(v_star, psi_star, dtCtrl){
   let tau2=(KP_PHI*(phiStar-s.phi)-KD_PHI*s.w_steer)*S_STEER;
   const cap2=motorCurve(s.w_steer); tau2=Math.max(-cap2,Math.min(cap2,tau2));
   setAt(data.ctrl,ADDR.drive,tau*S_DRIVE); setAt(data.ctrl,ADDR.steer,tau2); setAt(data.ctrl,ADDR.spin,spinCmd);
+  // battery: datasheet current from applied torques + electronics idle (sim-time energy)
+  wattNow=V_BUS*(motorCurrent(tau*S_DRIVE)+motorCurrent(tau2)+motorCurrent(spinCmd))+P_IDLE;
+  whUsed+=wattNow*dtCtrl/3600;
   return s;
 }
 
+const rayPnt=new Float64Array(3), rayVec=new Float64Array(3), rayGid=new Int32Array(1), rayGrp=new Uint8Array([0,1,0,0,0,0]);
+function lidarSweep(s){
+  rayPnt[0]=s.pos[0]; rayPnt[1]=s.pos[1]; rayPnt[2]=0.20;
+  for(let i=0;i<13;i++){
+    rayVec[0]=Math.cos(s.yaw+RAY_ANGS[i]); rayVec[1]=Math.sin(s.yaw+RAY_ANGS[i]); rayVec[2]=0;
+    const d=mj.mj_ray(model,data,rayPnt,rayVec,rayGrp,1,bodies.shell,rayGid);
+    lidar[i]=(d>=0&&d<RAY_MAX)?d:RAY_MAX;
+  }
+}
+
 function navTick(s){
-  let v_star=0, psi_star=s.yaw;
+  let v_star=0, psi_star=s.yaw, mode='ready';
   if(target){
     const dx=target.x-s.pos[0], dy=target.y-s.pos[1], dist=Math.hypot(dx,dy);
-    if(dist<1.0){target=null; document.getElementById('state').textContent='arrived';}   // 1.0 m capture: same radius as the validated campus nav - the ball's min turn radius makes tighter homing orbit forever
+    if(dist<1.0){target=null; mode='arrived';}   // 1.0 m capture: same radius as the validated campus nav - the ball's min turn radius makes tighter homing orbit forever
     else{v_star=Math.min(V_CRUISE,Math.max(0.4,0.45*dist)); psi_star=Math.atan2(dy,dx);
          if(Math.abs(wrap(psi_star-s.yaw))>0.6 && Math.abs(s.v_meas)<0.4) v_star=Math.min(v_star,0.25);
-         document.getElementById('state').textContent='driving '+dist.toFixed(1)+' m';}
+         mode='driving '+dist.toFixed(1)+' m';}
   }
+  // campus yield logic, verbatim bands: stop inside 0.5, creep+bias inside 1.2, brake-match inside 4.5
+  const dmin=Math.min(...lidar), imin=lidar.indexOf(dmin);
+  if(dmin<0.5){v_star=0.0; mode='yielding';}
+  else if(dmin<1.2){v_star=(dmin<0.7)?0.0:Math.min(v_star,0.35);
+       psi_star+=((RAY_ANGS[imin]>0)?-0.5:0.5); if(mode==='ready')mode='yielding';}
+  else if(dmin<4.5){v_star=Math.min(v_star,Math.max(0.35,0.5*(dmin-0.6)));}
+  document.getElementById('state').textContent=mode;
   return [v_star, psi_star];
 }
 
@@ -131,19 +177,68 @@ const cam=new THREE.PerspectiveCamera(50,1,0.01,100); cam.up.set(0,0,1); cam.pos
 const orbit=new OrbitControls(cam,canvas); orbit.enableDamping=true; orbit.maxPolarAngle=Math.PI*0.49;
 scene.add(new THREE.HemisphereLight(0x8fb8ff,0x1a2433,0.9));
 const sun=new THREE.DirectionalLight(0xfff2e0,1.6); sun.position.set(3,-2,5); sun.castShadow=true;
-sun.shadow.mapSize.set(1024,1024); scene.add(sun);
+sun.shadow.mapSize.set(2048,2048); sun.shadow.camera.left=-14; sun.shadow.camera.right=14;
+sun.shadow.camera.top=14; sun.shadow.camera.bottom=-14; scene.add(sun);
 renderer.shadowMap.enabled=true;
 
 // ground
 const ground=new THREE.Mesh(new THREE.CircleGeometry(30,64),
-  new THREE.MeshStandardMaterial({color:0x182030,roughness:0.95}));
+  new THREE.MeshStandardMaterial({color:0x2b3038,roughness:0.95}));
 ground.receiveShadow=true; scene.add(ground);
 const grid=new THREE.GridHelper(60,60,0x2a3a55,0x1b2740); grid.rotation.x=Math.PI/2; grid.position.z=0.001; scene.add(grid);
+
+// ---- terrain park twins (must match spherebot.xml geoms exactly) ----
+function pad(color,x,y,h){const m=new THREE.Mesh(new THREE.BoxGeometry(4,4,h*2),new THREE.MeshStandardMaterial({color,roughness:0.95}));
+  m.position.set(x,y,h); m.receiveShadow=true; scene.add(m); return m;}
+pad(0x2e5231,-6,4,0.010);                       // grass
+const gr=pad(0x8a7f6a,6,4,0.015); gr.material.roughness=1.0;  // gravel
+const sl=pad(0x2b3d55,-6,-5,0.008); sl.material.roughness=0.15; sl.material.metalness=0.4; // slick
+const hill=new THREE.Mesh(new THREE.SphereGeometry(1.8,40,24),new THREE.MeshStandardMaterial({color:0x3f6134,roughness:1}));
+hill.scale.z=0.25; hill.position.set(6,-4,-0.35+0.25*1.8-0.35); hill.castShadow=hill.receiveShadow=true;
+hill.position.z=-0.10; scene.add(hill);         // ellipsoid 1.8 1.8 0.45 at z=-0.10
+const ramp=new THREE.Mesh(new THREE.BoxGeometry(3.0,2.0,0.6),new THREE.MeshStandardMaterial({color:0x62646a,roughness:0.85}));
+ramp.rotation.y=-0.13; ramp.position.set(2.5,7,-0.083); ramp.castShadow=ramp.receiveShadow=true; scene.add(ramp);
+for(let i=0;i<4;i++){const h=0.07*(i+1);
+  const st=new THREE.Mesh(new THREE.BoxGeometry(0.35,1.2,h),new THREE.MeshStandardMaterial({color:i%2?0x5a5c60:0x62646a,roughness:0.9}));
+  st.position.set(10+i*0.35,0,h/2); st.castShadow=st.receiveShadow=true; scene.add(st);}
+const curb=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.3,0.12),new THREE.MeshStandardMaterial({color:0x6a6c70,roughness:0.9}));
+curb.position.set(3,-8,0.06); curb.castShadow=curb.receiveShadow=true; scene.add(curb);
+// real-world objects
+function obj(geo,color,x,y,z){const m=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color,roughness:0.8}));
+  m.position.set(x,y,z); m.castShadow=m.receiveShadow=true; scene.add(m); return m;}
+obj(new THREE.BoxGeometry(0.1,0.4,0.4),0x59381e,-3.5,8,0.20);
+obj(new THREE.BoxGeometry(0.1,0.4,0.4),0x59381e,-2.5,8,0.20);
+obj(new THREE.BoxGeometry(1.3,0.45,0.07),0x7a4d29,-3,8,0.425);
+obj(new THREE.CylinderGeometry(0.05,0.05,2.3,12),0x26292e,5,9,1.15);
+const lampHead=obj(new THREE.BoxGeometry(0.32,0.32,0.18),0xe8d99a,5,9,2.35);
+lampHead.material.emissive=new THREE.Color(0xffedb0); lampHead.material.emissiveIntensity=0.9;
+const lampLight=new THREE.PointLight(0xffdf9e,1.2,7); lampLight.position.set(5,9,2.2); scene.add(lampLight);
+obj(new THREE.BoxGeometry(0.8,0.8,0.36),0x73402a,-8,-1,0.18);
+obj(new THREE.BoxGeometry(0.8,0.8,0.36),0x73402a,-8,-3,0.18);
+for(const [px,pz] of [[-8,-1],[-8,-3]]){const bush=new THREE.Mesh(new THREE.SphereGeometry(0.34,16,12),
+  new THREE.MeshStandardMaterial({color:0x2e5c33,roughness:1})); bush.position.set(px,pz,0.5); bush.castShadow=true; scene.add(bush);}
+
+// pedestrians: person-shaped, synced to mocap bodies
+const pedMeshes=[];
+for(let i=0;i<4;i++){
+  const g=new THREE.Group(), shirt=[0x3350b0,0xb04030,0x2f8f4d,0xc0a030][i];
+  const torso=new THREE.Mesh(new THREE.CapsuleGeometry(0.17,1.0,6,12),new THREE.MeshStandardMaterial({color:shirt,roughness:0.8}));
+  torso.position.z=0.85; torso.castShadow=true; g.add(torso);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.12,16,12),new THREE.MeshStandardMaterial({color:0xd8b596,roughness:0.7}));
+  head.position.z=1.62; head.castShadow=true; g.add(head);
+  scene.add(g); pedMeshes.push(g);
+}
 
 // destination marker
 const marker=new THREE.Mesh(new THREE.RingGeometry(0.16,0.22,40),
   new THREE.MeshBasicMaterial({color:0x4db2ff,side:THREE.DoubleSide,transparent:true,opacity:0.9}));
 marker.position.z=0.005; marker.visible=false; scene.add(marker);
+
+// lidar fan lines
+const lidarGeo=new THREE.BufferGeometry();
+lidarGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(13*2*3),3));
+const lidarLines=new THREE.LineSegments(lidarGeo,new THREE.LineBasicMaterial({color:0x54e0ff,transparent:true,opacity:0.55}));
+lidarLines.frustumCulled=false; scene.add(lidarLines);
 
 // ---- the bot: BOM-accurate shapes, posed from mjData every frame ----
 const shellMat=new THREE.MeshPhysicalMaterial({color:0xcfe6ff,transmission:0.92,thickness:0.003,
@@ -169,19 +264,27 @@ mast.position.set(0,0,0.06); chassisG.add(mast);
 box(0.03,0.03,0.02,0x14181f).position.set(0,0,0.125);              // camera module
 const lens=new THREE.Mesh(new THREE.CircleGeometry(0.008,16),new THREE.MeshBasicMaterial({color:0x66ff88}));
 lens.position.set(0.015,0,0.125); lens.rotation.y=Math.PI/2; chassisG.add(lens);
-// LED matrix eyes (5x7 each, emissive blue) on the +x face
-const eyeMat=new THREE.MeshBasicMaterial({color:0x4db2ff});
+// LED matrix eyes: 5x7 emissive blue dots + additive glow halo, on the +x face (matches campus eyeglow placement)
+const eyeMat=new THREE.MeshBasicMaterial({color:0x86d4ff});
+const glowTex=(()=>{const cv=document.createElement('canvas');cv.width=cv.height=128;const g=cv.getContext('2d');
+  const gr=g.createRadialGradient(64,64,4,64,64,64);gr.addColorStop(0,'rgba(140,210,255,0.95)');gr.addColorStop(0.35,'rgba(80,170,255,0.45)');gr.addColorStop(1,'rgba(40,120,255,0)');
+  g.fillStyle=gr;g.fillRect(0,0,128,128);return new THREE.CanvasTexture(cv);})();
 for(const sy of [1,-1]){const eg=new THREE.Group();
   for(let r=0;r<7;r++)for(let c=0;c<5;c++){
-    const dot=new THREE.Mesh(new THREE.SphereGeometry(0.0022,8,6),eyeMat);
-    const edge=(r===0||r===6||c===0||c===4);
-    dot.position.set(0,(c-2)*0.006+sy*0.028,(r-3)*0.006+0.06);
-    if(!edge) eg.add(dot);}
-  eg.position.set(0.052,0,0); chassisG.add(eg);}
+    const dot=new THREE.Mesh(new THREE.SphereGeometry(0.005,10,8),eyeMat);
+    dot.position.set(0,(c-2)*0.011,(r-3)*0.011);
+    eg.add(dot);}
+  const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:0x5fb8ff,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
+  glow.scale.set(0.16,0.16,1); glow.position.x=0.006; eg.add(glow);
+  eg.position.set(0.172,sy*0.048,0.06); chassisG.add(eg);}
+const eyeLight=new THREE.PointLight(0x66c0ff,0.55,0.9); eyeLight.position.set(0.19,0,0.06); chassisG.add(eyeLight);
 // flywheel (spins about z)
 const flyG=new THREE.Group(); scene.add(flyG);
 const fly=new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.045,0.008,32),new THREE.MeshStandardMaterial({color:0x9a4dbb,metalness:0.6,roughness:0.3}));
 fly.rotation.x=Math.PI/2; fly.castShadow=true; flyG.add(fly);
+
+// bot camera (toggleable picture-in-picture)
+const camBot=new THREE.PerspectiveCamera(62,16/9,0.01,60); camBot.up.set(0,0,1);
 
 function syncMeshes(){
   const q=data.qpos;
@@ -193,14 +296,33 @@ function syncMeshes(){
     g.quaternion.set(at(data.xquat,4*b+1),at(data.xquat,4*b+2),at(data.xquat,4*b+3),at(data.xquat,4*b));}
   fly.rotation.set(Math.PI/2,at(data.qpos,ADDR.fly),0);
   if(target){marker.position.set(target.x,target.y,0.005);marker.visible=true;}else marker.visible=false;
+  for(let i=0;i<4;i++){const [px,py]=pedPos(i,data.time); pedMeshes[i].position.set(px,py,0);}
+  // lidar fan render
+  const p=lidarGeo.attributes.position.array, s=ctrlState();
+  for(let i=0;i<13;i++){
+    const a=s.yaw+RAY_ANGS[i], d=lidar[i];
+    p[i*6]=s.pos[0]; p[i*6+1]=s.pos[1]; p[i*6+2]=0.20;
+    p[i*6+3]=s.pos[0]+d*Math.cos(a); p[i*6+4]=s.pos[1]+d*Math.sin(a); p[i*6+5]=0.20;
+  }
+  lidarGeo.attributes.position.needsUpdate=true;
+  const near=Math.min(...lidar);
+  lidarLines.material.color.setHSL(near<1.2?0.0:0.52,0.9,near<1.2?0.6:0.55);
+  // bot camera pose: chassis mast looking along chassis +x
+  const cb=bodies.chassis, qw=at(data.xquat,4*cb),qx=at(data.xquat,4*cb+1),qy=at(data.xquat,4*cb+2),qz=at(data.xquat,4*cb+3);
+  const xw=[1-2*(qy*qy+qz*qz),2*(qx*qy+qz*qw),2*(qx*qz-qy*qw)];
+  const cp=new THREE.Vector3(at(data.xpos,3*cb),at(data.xpos,3*cb+1),at(data.xpos,3*cb+2)+0.125);
+  camBot.position.copy(cp);
+  camBot.lookAt(cp.x+xw[0],cp.y+xw[1],cp.z+xw[2]-0.1);
 }
 
 // ---------- input ----------
 const ray=new THREE.Raycaster(), plane=new THREE.Plane(new THREE.Vector3(0,0,1),0), ndc=new THREE.Vector2();
-let downAt=0;
-canvas.addEventListener('pointerdown',()=>downAt=performance.now());
+let downXY=null;
+canvas.addEventListener('pointerdown',e=>{downXY=[e.clientX,e.clientY];});
 canvas.addEventListener('pointerup',e=>{
-  if(performance.now()-downAt>220)return;                 // drag, not tap
+  if(!downXY)return;
+  const moved=Math.hypot(e.clientX-downXY[0],e.clientY-downXY[1]); downXY=null;
+  if(moved>12)return;                                 // drag (orbit), not tap
   ndc.set((e.clientX/innerWidth)*2-1,-(e.clientY/innerHeight)*2+1);
   ray.setFromCamera(ndc,cam);
   const p=new THREE.Vector3();
@@ -210,7 +332,11 @@ document.getElementById('jump').addEventListener('click',()=>{
   if(jumping)return; jumpBase=at(data.qpos,2); jumping=true;
   document.getElementById('state').textContent='jump!';
 });
+const camBtn=document.getElementById('cam');
+function toggleCam(){camOn=!camOn; camBtn.style.borderColor=camOn?'#37e08b':'#4db2ff';}
+camBtn.addEventListener('click',toggleCam);
 addEventListener('keydown',e=>{if(e.key==='j'||e.key==='J')document.getElementById('jump').click();
+  if(e.key==='c'||e.key==='C')toggleCam();
   if(e.key===' '){spinCmd=spinCmd?0:TAU_M3_MAX;}});
 
 // ---------- main loop ----------
@@ -218,27 +344,42 @@ let last=performance.now(), acc=0, k=0;
 function frame(now){
   requestAnimationFrame(frame);
   if(model){
+    // pedestrians move on sim time (mocap kinematic bodies, same as campus_nav.py)
+    for(let i=0;i<4;i++){const [px,py]=pedPos(i,data.time);
+      setAt(data.mocap_pos,3*pedMocap[i],px); setAt(data.mocap_pos,3*pedMocap[i]+1,py); setAt(data.mocap_pos,3*pedMocap[i]+2,0);}
     acc+=Math.min((now-last)/1000,0.05);
     let n=0;
     while(acc>=DT&&n<40){
-      if(k%CTRL_EVERY===0){const s0=ctrlState();const [v,psi]=navTick(s0);stepControl(v,psi,DT*CTRL_EVERY);}
+      if(k%CTRL_EVERY===0){const s0=ctrlState();lidarSweep(s0);const [v,psi]=navTick(s0);stepControl(v,psi,DT*CTRL_EVERY);}
       jumpTick(); mj.mj_step(model,data); k++; acc-=DT; n++;}
     if(acc>=DT)acc=0;   // shed backlog instead of spiral
     syncMeshes();
     const s=ctrlState();
+    const soc=Math.max(0,100*(1-whUsed/WH_USABLE));
     document.getElementById('tele').textContent=`v ${s.v_true.toFixed(2)} m/s · lean ${(-s.pitch*57.3).toFixed(0)}° · t ${data.time.toFixed(1)} s`;
+    document.getElementById('battxt').textContent=`${wattNow.toFixed(1)} W · ${soc.toFixed(0)}%`;
+    document.getElementById('battfill').style.width=soc+'%';
+    document.getElementById('battfill').style.background=soc>25?'linear-gradient(90deg,#37e08b,#7fd0ff)':'#e0574b';
     // camera follows the bot softly
     const bp=shellG.position;
     orbit.target.lerp(new THREE.Vector3(bp.x,bp.y,bp.z),0.08);
   }
   last=now;
-  orbit.update(); renderer.render(scene,cam);
+  orbit.update();
+  renderer.setViewport(0,0,innerWidth,innerHeight); renderer.setScissorTest(false);
+  renderer.render(scene,cam);
+  if(model&&camOn){
+    const w=Math.min(380,innerWidth*0.42), h=w*9/16;
+    renderer.setViewport(12,60,w,h); renderer.setScissor(12,60,w,h); renderer.setScissorTest(true);
+    renderer.render(scene,camBot); renderer.setScissorTest(false);
+  }
 }
 function resize(){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();}
 addEventListener('resize',resize); resize();
 window.DBG={pos:()=>model?[at(data.qpos,0),at(data.qpos,1),at(data.qpos,2)]:null,
 yaw:()=>model?ctrlState().yaw:null,tgt:()=>target?[target.x,target.y]:null,
-cam:()=>cam,three:THREE};
+lidar:()=>lidar.slice(),watt:()=>wattNow,cam:()=>cam,three:THREE,
+setTarget:(x,y)=>{target={x,y};}};
 boot().catch(e=>{document.getElementById('load').textContent='failed to load physics: '+e.message;console.error(e);});
 requestAnimationFrame(frame);
 </script>
