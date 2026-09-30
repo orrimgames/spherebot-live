@@ -236,6 +236,9 @@ function frame(now){
 }
 function resize(){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();}
 addEventListener('resize',resize); resize();
+window.DBG={pos:()=>model?[at(data.qpos,0),at(data.qpos,1),at(data.qpos,2)]:null,
+yaw:()=>model?ctrlState().yaw:null,tgt:()=>target?[target.x,target.y]:null,
+cam:()=>cam,three:THREE};
 boot().catch(e=>{document.getElementById('load').textContent='failed to load physics: '+e.message;console.error(e);});
 requestAnimationFrame(frame);
 </script>
