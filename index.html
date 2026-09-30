@@ -277,7 +277,7 @@ for(const sy of [1,-1]){const eg=new THREE.Group();
   const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:0x5fb8ff,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
   glow.scale.set(0.16,0.16,1); glow.position.x=0.006; eg.add(glow);
   eg.position.set(0.172,sy*0.048,0.06); chassisG.add(eg);}
-const eyeGlows=chassisG.children.filter(o=>o.type==='Group').flatMap(g=>g.children.filter(c=>c.isSprite));
+const eyeGroups=chassisG.children.filter(o=>o.type==='Group');
 const eyeLight=new THREE.PointLight(0x66c0ff,0.55,0.9); eyeLight.position.set(0.19,0,0.06); chassisG.add(eyeLight);
 // flywheel (spins about z)
 const flyG=new THREE.Group(); scene.add(flyG);
@@ -372,10 +372,10 @@ function frame(now){
   if(model&&camOn){
     const w=Math.min(380,innerWidth*0.42), h=w*9/16;
     // the real camera looks out through its hatch window: hide the shell + eye glow for the bot's-eye view
-    shellMesh.visible=false; for(const g of eyeGlows)g.visible=false;
+    shellG.visible=false; for(const g of eyeGroups)g.visible=false;
     renderer.setViewport(12,60,w,h); renderer.setScissor(12,60,w,h); renderer.setScissorTest(true);
     renderer.render(scene,camBot); renderer.setScissorTest(false);
-    shellMesh.visible=true; for(const g of eyeGlows)g.visible=true;
+    shellG.visible=true; for(const g of eyeGroups)g.visible=true;
   }
 }
 function resize(){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();}
