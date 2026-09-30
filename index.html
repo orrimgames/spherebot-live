@@ -3,34 +3,41 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>SphereBot - live physics playground</title>
+<title>SphereBot - final spec live physics playground</title>
 <style>
   html,body{margin:0;height:100%;background:#0b0e14;overflow:hidden;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   #c{position:fixed;inset:0;touch-action:none}
   #hud{position:fixed;left:12px;top:10px;color:#9fd0ff;font-size:13px;line-height:1.5;pointer-events:none;text-shadow:0 1px 3px #000}
   #hud b{color:#fff;font-size:15px}
-  #jump{position:fixed;right:16px;bottom:18px;width:96px;height:96px;border-radius:50%;border:2px solid #4db2ff;
+  #park{position:fixed;right:16px;bottom:18px;width:96px;height:96px;border-radius:50%;border:2px solid #4db2ff;
         background:rgba(20,40,70,.75);color:#bfe3ff;font:bold 17px ui-monospace,monospace;cursor:pointer}
-  #jump:active{background:rgba(60,130,220,.8)}
+  #park:active{background:rgba(60,130,220,.8)}
   #cam{position:fixed;right:16px;bottom:126px;width:96px;height:40px;border-radius:10px;border:2px solid #4db2ff;
         background:rgba(20,40,70,.75);color:#bfe3ff;font:bold 13px ui-monospace,monospace;cursor:pointer}
   #cam:active{background:rgba(60,130,220,.8)}
+  #wind{position:fixed;right:16px;bottom:172px;width:140px;color:#9fd0ff;font-size:11px;text-align:right;text-shadow:0 1px 3px #000}
+  #wind input{width:140px}
+  #infob{position:fixed;left:12px;bottom:10px;width:54px;height:26px;border-radius:8px;border:1px solid #4db2ff;background:rgba(20,40,70,.75);color:#bfe3ff;font:bold 11px ui-monospace,monospace;cursor:pointer}
   #batt{position:fixed;right:16px;top:12px;width:120px;color:#9fd0ff;font-size:11px;text-align:right;text-shadow:0 1px 3px #000}
   #battbar{height:8px;border:1px solid #4db2ff;border-radius:4px;margin-top:3px;background:rgba(10,20,35,.6)}
   #battfill{height:100%;width:100%;border-radius:3px;background:linear-gradient(90deg,#37e08b,#7fd0ff)}
-  #note{position:fixed;left:12px;bottom:10px;color:#5c7186;font-size:11px;max-width:660px;line-height:1.45;pointer-events:none}
+  #note{position:fixed;left:12px;bottom:44px;color:#8aa2b8;font-size:11px;max-width:680px;max-height:70vh;overflow:auto;line-height:1.45;background:rgba(10,16,26,.88);padding:10px 12px;border-radius:8px;display:none}
   #load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#9fd0ff;font-size:15px;background:#0b0e14}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hud"><b>SPHEREBOT</b> <span id="state">loading…</span><br><span id="tele"></span><br>drag&nbsp;=&nbsp;orbit&nbsp;·&nbsp;tap&nbsp;=&nbsp;straight&nbsp;line&nbsp;there&nbsp;·&nbsp;C&nbsp;=&nbsp;camera</div>
-<button id="jump">JUMP</button>
+<div id="hud"><b>SPHEREBOT</b> <span id="state">loading…</span><br><span id="tele"></span><br>drag&nbsp;=&nbsp;orbit&nbsp;·&nbsp;tap&nbsp;=&nbsp;straight&nbsp;line&nbsp;there&nbsp;·&nbsp;C&nbsp;=&nbsp;camera&nbsp;·&nbsp;P&nbsp;=&nbsp;park</div>
+<button id="park">PARK</button>
+<div id="wind">wind <b id="windv">0</b> mph<br><input id="windr" type="range" min="0" max="60" value="0"></div>
+<button id="infob">INFO</button>
 <button id="cam">CAM</button>
 <div id="batt"><span id="battxt">100%</span><div id="battbar"><div id="battfill"></div></div></div>
-<div id="note">Real MuJoCo physics in your browser: rolling contact, pendulum drive dynamics, motor torque curve, jump spring, per-surface contact friction.
-The exact validated simulation model &amp; controller from the build package. Terrain-park behavior (hill, ramp, steps, curb, grass/gravel/slick pads) is unvalidated physics - failures are real data.
-Emulated / idealized: 24-ray 360-degree depth ring is noise-free, the camera view is a render (not the bot's vision pipeline), pedestrians are scripted movers, GPS is not modeled. Battery: datasheet power model, 72 Wh pack at 80% usable.</div>
+<div id="note"><b>FINAL SPEC - build package section 9 (2026-09-30)</b><br>
+406 mm smoked polycarbonate through-axle sphere, 5.34 kg. Flywheel, legs and ports deleted; no jump module. 2 kg steel ballast as a band at 0.17 m depth; system CG 0.085 m below the shell center. Fwd/rev drive with lateral-lean steering, plus dual spring-applied park brakes (about 3 N m slip at the axle). Axle: 15 mm 4140 steel on 4x 6002-2RS bearings.<br>
+<b>Numbers:</b> mission max speed 1.07 m/s; runtime about 4.5-5.3 h (derived: sim power 8.7 W plus electronics, 57.6 Wh usable); drive torque RMS 0.21 N m, 99th percentile 1.04 N m. <b>Park:</b> holds 40 mph steady on the two wind directions tested (0.50 m drift / 33 deg tilt along the roll axis, 0.21 m / 34 deg sideways). 45 mph is marginal (slides at floor friction 0.25, rolls along the roll axis at 0.4); 50 mph and up fails. This page's own park test (wind along +x, 3 N m joint friction) measured: 25 mph 0.14 m drift, 40 mph 0.40 m drift with the chassis tilted 27 deg, 45 mph 2.2 m (rolling), 50 mph 10.7 m (fails), 60 mph fails. BOM about $449 (+/-50% on estimated lines).<br>
+<b>Not yet confirmed:</b> axle bench test at 887 N in bending (annealed 4140 is only 1.03x at that load); 6002-2RS static rating (unsourced); 4140 yield (assumed); brake bench test and brake price (unsourced); drive motor heating at 1.04 N m; the static-hang damping check fails at 8 s (lightly damped 1 Hz pitch mode); the eye boom needs an outdoor brightness test.<br>
+<b>Real vs emulated:</b> real MuJoCo physics in your browser at the final mass, CG and ballast: rolling contact, pendulum drive, motor torque curve, per-surface friction. PARK locks both drive joints with 3 N m of joint friction (the same model as the sweep); wind is a steady force at the shell center (drag coefficient 0.47 assumed, flat floor, azimuth set by the bot heading). Terrain-park behavior is unvalidated physics - failures are real data. Emulated: noise-free 24-ray depth ring, camera view and smoked shell are renders, pedestrians are scripted, GPS not modeled. Smoke tint and eye glow are visual only. Not a finished design.</div>
 <div id="load">loading physics engine (11 MB wasm)…</div>
 <script type="importmap">{"imports":{"three":"./three.module.js","three/addons/controls/OrbitControls.js":"./OrbitControls.js"}}</script>
 <script type="module">
@@ -46,8 +53,6 @@ const TH_MAX=25*Math.PI/180, PHI_MAX=22*Math.PI/180;
 const TAU_STALL=27*0.0980665, W_NL=150/60*2*Math.PI, TAU_M3_MAX=0.08;
 const S_ODOM=-1.0, S_DRIVE=1.0, S_STEER=1.0;
 const V_CRUISE=1.2;
-// jump module (validated 11 J bungee spring, render_jump.py)
-const K_JUMP=10000.0, X0_JUMP=Math.sqrt(2*11.0/K_JUMP);
 // battery model (params.py): I = I_NL + (I_STALL-I_NL)*|tau|/TAU_STALL at V_BUS, + electronics idle
 const V_BUS=12.0, I_NL=0.2, I_STALL=5.5, P_IDLE=3.0, WH_USABLE=72*0.8;
 const motorCurve = w => Math.max(0, TAU_STALL*(1-Math.abs(w)/W_NL));
@@ -59,8 +64,8 @@ function quatToEuler(w,x,y,z){const sy=Math.max(-1,Math.min(1,2*(w*y-z*x)));
 const RAY_ANGS = Array.from({length:24},(_,i)=>i*(2*Math.PI/24));   // omni ring (campus fan generalized)
 const RAY_MAX = 9.9;
 
-let mj, model, data, ADDR, bodies={}, pedMocap=[], int_v=0.0, target=null, jumping=false, jumpBase=0;
-let spinCmd=0.0, wattNow=0.0, whUsed=0.0, lidar=RAY_ANGS.map(()=>RAY_MAX), camOn=false;
+let mj, model, data, ADDR, bodies={}, pedMocap=[], int_v=0.0, target=null, parked=false, parkX=0, parkY=0, windNow=0;
+let wattNow=0.0, whUsed=0.0, lidar=RAY_ANGS.map(()=>RAY_MAX), camOn=false;
 const at=(v,i)=>v[i]; const setAt=(v,i,x)=>{v[i]=x;};
 const OBJ=n=>{const o=mj.mjtObj&&mj.mjtObj[n];return typeof o==='object'&&o!==null?o.value:o;};
 
@@ -76,17 +81,17 @@ function pedPos(i,t){
 async function boot(){
   mj = await loadMujoco();
   mj.FS.mkdir('/w'); mj.FS.mount(mj.MEMFS,{root:'.'},'/w');
-  const xml = await (await fetch('./spherebot.xml?v=2')).text();
+  const xml = await (await fetch('./spherebot.xml?v=3')).text();
   mj.FS.writeFile('/w/bot.xml', xml);
   model = mj.MjModel.loadFromXML('/w/bot.xml');
   data = new mj.MjData(model);
   const jid=n=>mj.mj_name2id(model,OBJ('mjOBJ_JOINT'),n), aid=n=>mj.mj_name2id(model,OBJ('mjOBJ_ACTUATOR'),n),
         bid=n=>mj.mj_name2id(model,OBJ('mjOBJ_BODY'),n);
   const jpos=n=>at(model.jnt_qposadr,jid(n)), jdof=n=>at(model.jnt_dofadr,jid(n));
-  ADDR={drive:aid('drive'),steer:aid('steer'),spin:aid('spin'),
-        iso:jpos('iso_z'),brg:jpos('bearing_y'),stx:jpos('steer_x'),fly:jpos('fly_z'),
+  ADDR={drive:aid('drive'),steer:aid('steer'),
+        iso:jpos('iso_z'),brg:jpos('bearing_y'),stx:jpos('steer_x'),
         dBrg:jdof('bearing_y'),dStx:jdof('steer_x')};
-  for(const n of ['shell','chassis','pendulum','flywheel']) bodies[n]=bid(n);
+  for(const n of ['shell','chassis','pendulum']) bodies[n]=bid(n);
   for(let i=0;i<4;i++){const b=bid('ped_'+i); pedMocap.push(at(model.body_mocapid,b));}
   const bad=Object.entries({...ADDR,...bodies}).filter(([,v])=>v<0).map(([k])=>k);
   if(bad.length) throw new Error('name lookup failed: '+bad.join(','));
@@ -124,9 +129,9 @@ function stepControl(v_star, psi_star, dtCtrl, dir=1){
   const phiStar=Math.max(-PHI_MAX,Math.min(PHI_MAX,KP_PSI*epsi*phiScale*dir));   // mirrored steering when backing up
   let tau2=(KP_PHI*(phiStar-s.phi)-KD_PHI*s.w_steer)*S_STEER;
   const cap2=motorCurve(s.w_steer); tau2=Math.max(-cap2,Math.min(cap2,tau2));
-  setAt(data.ctrl,ADDR.drive,tau*S_DRIVE); setAt(data.ctrl,ADDR.steer,tau2); setAt(data.ctrl,ADDR.spin,spinCmd);
+  setAt(data.ctrl,ADDR.drive,tau*S_DRIVE); setAt(data.ctrl,ADDR.steer,tau2);
   // battery: datasheet current from applied torques + electronics idle (sim-time energy)
-  wattNow=V_BUS*(motorCurrent(tau*S_DRIVE)+motorCurrent(tau2)+motorCurrent(spinCmd))+P_IDLE;
+  wattNow=V_BUS*(motorCurrent(tau*S_DRIVE)+motorCurrent(tau2))+P_IDLE;
   whUsed+=wattNow*dtCtrl/3600;
   return s;
 }
@@ -178,12 +183,21 @@ function navTick(s){
   return [v_star, psi_star, driveDir];
 }
 
-function jumpTick(){
-  const sb=bodies.shell;
-  if(!jumping){setAt(data.xfrc_applied,6*sb+2,0); return;}
-  const rise=at(data.qpos,2)-jumpBase;
-  setAt(data.xfrc_applied,6*sb+2,(rise<X0_JUMP)?K_JUMP*(X0_JUMP-rise):0);
-  if(rise>=X0_JUMP||at(data.qpos,2)>R_SHELL+0.05){jumping=false;}
+function parkTick(){
+  const sb=bodies.shell, target=parked?parseFloat(document.getElementById('windr').value):0;
+  windNow+=(target-windNow)*Math.min(1,DT/1.0);
+  const v=windNow*0.44704, F=0.5*1.2*0.47*Math.PI*R_SHELL*R_SHELL*v*v;
+  // wind blows along world +x (steady force at shell center)
+  setAt(data.xfrc_applied,6*sb,F); setAt(data.xfrc_applied,6*sb+1,0);
+}
+function setPark(on){
+  parked=on;
+  const fl=on?3.0:0.002;
+  setAt(model.dof_frictionloss,ADDR.dBrg,fl); setAt(model.dof_frictionloss,ADDR.dStx,fl);
+  if(on){int_v=0; target=null; parkX=at(data.qpos,0); parkY=at(data.qpos,1);
+    setAt(data.ctrl,ADDR.drive,0); setAt(data.ctrl,ADDR.steer,0);}
+  document.getElementById('park').style.borderColor=on?'#37e08b':'#4db2ff';
+  document.getElementById('park').textContent=on?'UNPARK':'PARK';
 }
 
 // ---------- three.js scene ----------
@@ -259,8 +273,8 @@ const lidarLines=new THREE.LineSegments(lidarGeo,new THREE.LineBasicMaterial({co
 lidarLines.frustumCulled=false; scene.add(lidarLines);
 
 // ---- the bot: BOM-accurate shapes, posed from mjData every frame ----
-const shellMat=new THREE.MeshPhysicalMaterial({color:0xcfe6ff,transmission:0.92,thickness:0.003,
-  roughness:0.28,ior:1.5,transparent:true,opacity:1,side:THREE.DoubleSide});
+const shellMat=new THREE.MeshPhysicalMaterial({color:0x1b212a,transmission:0.0,
+  roughness:0.18,metalness:0.1,transparent:true,opacity:0.62,side:THREE.DoubleSide});
 const shellG=new THREE.Group();
 const shellMesh=new THREE.Mesh(new THREE.SphereGeometry(R_SHELL,48,32),shellMat); shellMesh.castShadow=true; shellG.add(shellMesh);
 // hatch rim + camera window (real-build details)
@@ -277,6 +291,7 @@ const mot2=mot1.clone(); mot2.rotation.set(0,0,Math.PI/2); mot2.position.set(0.0
 const batt=box(0.11,0.06,0.056,0xc79a2e,0.6); batt.position.set(0,0,-0.09);        // 3S2P pack
 const ballast=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,0.006,28),new THREE.MeshStandardMaterial({color:0x555a63,metalness:0.7,roughness:0.3}));
 ballast.rotation.x=Math.PI/2; ballast.position.set(0,0,-0.125); ballast.castShadow=true; chassisG.add(ballast);
+const band=new THREE.Mesh(new THREE.SphereGeometry(0.19,40,8,0,Math.PI*2,Math.PI-0.50,0.50),new THREE.MeshStandardMaterial({color:0x6d737d,metalness:0.7,roughness:0.35,side:THREE.DoubleSide}));chassisG.add(band);
 const mast=new THREE.Mesh(new THREE.CylinderGeometry(0.008,0.008,0.12,12),new THREE.MeshStandardMaterial({color:0x666c78,metalness:0.5,roughness:0.4}));
 mast.position.set(0,0,0.06); chassisG.add(mast);
 box(0.03,0.03,0.02,0x14181f).position.set(0,0,0.125);              // camera module
@@ -299,10 +314,6 @@ for(const sy of [1,-1]){const eg=new THREE.Group();
 eyePair.position.set(0.172,0,0.06);
 const eyeGroups=chassisG.children.filter(o=>o.type==='Group');
 const eyeLight=new THREE.PointLight(0x66c0ff,0.55,0.9); eyeLight.position.set(0.19,0,0.06); chassisG.add(eyeLight);
-// flywheel (spins about z)
-const flyG=new THREE.Group(); scene.add(flyG);
-const fly=new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.045,0.008,32),new THREE.MeshStandardMaterial({color:0x9a4dbb,metalness:0.6,roughness:0.3}));
-fly.rotation.x=Math.PI/2; fly.castShadow=true; flyG.add(fly);
 
 // bot camera (toggleable picture-in-picture)
 const camBot=new THREE.PerspectiveCamera(62,16/9,0.01,60); camBot.up.set(0,0,1);
@@ -311,11 +322,10 @@ function syncMeshes(){
   const q=data.qpos;
   shellG.position.set(at(q,0),at(q,1),at(q,2));
   shellG.quaternion.set(at(q,4),at(q,5),at(q,6),at(q,3));   // wxyz -> xyzw
-  for(const [g,name] of [[chassisG,'chassis'],[flyG,'flywheel']]){
+  for(const [g,name] of [[chassisG,'chassis']]){
     const b=bodies[name];
     g.position.set(at(data.xpos,3*b),at(data.xpos,3*b+1),at(data.xpos,3*b+2));
     g.quaternion.set(at(data.xquat,4*b+1),at(data.xquat,4*b+2),at(data.xquat,4*b+3),at(data.xquat,4*b));}
-  fly.rotation.set(Math.PI/2,at(data.qpos,ADDR.fly),0);
   if(target){marker.position.set(target.x,target.y,0.005);marker.visible=true;}else marker.visible=false;
   for(let i=0;i<4;i++){const [px,py]=pedPos(i,data.time); pedMeshes[i].position.set(px,py,0);}
   // lidar fan render
@@ -356,16 +366,14 @@ canvas.addEventListener('pointerup',e=>{
   const p=new THREE.Vector3();
   if(ray.ray.intersectPlane(plane,p)&&Math.hypot(p.x,p.y)<28) target={x:p.x,y:p.y};
 });
-document.getElementById('jump').addEventListener('click',()=>{
-  if(jumping)return; jumpBase=at(data.qpos,2); jumping=true;
-  document.getElementById('state').textContent='jump!';
-});
+document.getElementById('park').addEventListener('click',()=>setPark(!parked));
+document.getElementById('windr').addEventListener('input',e=>{document.getElementById('windv').textContent=e.target.value;});
+document.getElementById('infob').addEventListener('click',()=>{const n=document.getElementById('note');n.style.display=n.style.display==='block'?'none':'block';});
 const camBtn=document.getElementById('cam');
 function toggleCam(){camOn=!camOn; camBtn.style.borderColor=camOn?'#37e08b':'#4db2ff';}
 camBtn.addEventListener('click',toggleCam);
-addEventListener('keydown',e=>{if(e.key==='j'||e.key==='J')document.getElementById('jump').click();
-  if(e.key==='c'||e.key==='C')toggleCam();
-  if(e.key===' '){spinCmd=spinCmd?0:TAU_M3_MAX;}});
+addEventListener('keydown',e=>{if(e.key==='c'||e.key==='C')toggleCam();
+  if(e.key==='p'||e.key==='P')setPark(!parked);});
 
 // ---------- main loop ----------
 let last=performance.now(), acc=0, k=0;
@@ -378,13 +386,13 @@ function frame(now){
     acc+=Math.min((now-last)/1000,0.05);
     let n=0;
     while(acc>=DT&&n<40){
-      if(k%CTRL_EVERY===0){const s0=ctrlState();lidarSweep(s0);const [v,psi,dd]=navTick(s0);stepControl(v,psi,DT*CTRL_EVERY,dd);}
-      jumpTick(); mj.mj_step(model,data); k++; acc-=DT; n++;}
+      if(k%CTRL_EVERY===0){const s0=ctrlState();lidarSweep(s0);if(!parked){const [v,psi,dd]=navTick(s0);stepControl(v,psi,DT*CTRL_EVERY,dd);}else{wattNow=P_IDLE;whUsed+=wattNow*DT*CTRL_EVERY/3600;document.getElementById('state').textContent='parked';}}
+      parkTick(); mj.mj_step(model,data); k++; acc-=DT; n++;}
     if(acc>=DT)acc=0;   // shed backlog instead of spiral
     syncMeshes();
     const s=ctrlState();
     const soc=Math.max(0,100*(1-whUsed/WH_USABLE));
-    document.getElementById('tele').textContent=`v ${s.v_true.toFixed(2)} m/s · lean ${(-s.pitch*57.3).toFixed(0)}° · t ${data.time.toFixed(1)} s`;
+    document.getElementById('tele').textContent=parked?`parked · wind ${windNow.toFixed(0)} mph · tilt ${(Math.hypot(s.pitch,s.roll)*57.3).toFixed(0)}° · drift ${Math.hypot(s.pos[0]-parkX,s.pos[1]-parkY).toFixed(2)} m · t ${data.time.toFixed(1)} s`:`v ${s.v_true.toFixed(2)} m/s · lean ${(-s.pitch*57.3).toFixed(0)}° · t ${data.time.toFixed(1)} s`;
     document.getElementById('battxt').textContent=`${wattNow.toFixed(1)} W · ${soc.toFixed(0)}%`;
     document.getElementById('battfill').style.width=soc+'%';
     document.getElementById('battfill').style.background=soc>25?'linear-gradient(90deg,#37e08b,#7fd0ff)':'#e0574b';
